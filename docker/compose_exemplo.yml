@@ -1,0 +1,254 @@
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+    args:
+      INSTALL_POSTGRES_CLIENT: "true"
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-postgres/airflow
+    AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'true'
+    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.session'
+    AIRFLOW__SECRETS__BACKEND: airflow.secrets.local_filesystem.LocalFilesystemBackend
+    AIRFLOW__SECRETS__BACKEND_KWARGS: '{"variables_file_path": "/opt/secrets/variables.yaml", "connections_file_path": "/opt/secrets/connections.yaml"}'
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags
+    - airflow_logs:/opt/airflow/logs
+    - airflow_plugins:/opt/airflow/plugins
+    - airflow_secrets:/opt/secrets
+  networks:
+    - datalakehouse
+  user: "${AIRFLOW_UID}"
+  depends_on:
+    airflow-postgres:
+      condition: service_healthy
+
+x-minio-common: &minio-common
+  image: minio/minio:RELEASE.2025-02-03T21-03-04Z-cpuv1
+  command: server --console-address ":9090" /mnt/data
+  ports:
+    - "9000:9000"
+    - "9090:9090"
+  healthcheck:
+    test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+    interval: 30s
+    timeout: 20s
+    retries: 3
+
+services:
+  airflow-postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    networks:
+      - datalakehouse
+    volumes:
+      - airflow_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+
+  hive-metastore-db:
+    image: bitnami/postgresql:13
+    container_name: hive-metastore-db
+    environment:
+      POSTGRESQL_USERNAME: hive
+      POSTGRESQL_PASSWORD: hivepassword
+      POSTGRESQL_DATABASE: metastore
+    ports:
+      - "5433:5432"  
+    networks:
+      - datalakehouse
+    volumes:
+      - hive_postgres_data:/bitnami/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "hive"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+
+  airbyte-db:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: airbyte
+      POSTGRES_PASSWORD: airbyte
+      POSTGRES_DB: airbyte
+    networks:
+      - datalakehouse
+    volumes:
+      - airbyte_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airbyte"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+
+  minio:
+    <<: *minio-common
+    container_name: minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio_data:/mnt/data
+      - minio_config:/etc/config.env
+    networks:
+      - datalakehouse
+
+  hive-metastore:
+    image: apache/hive:4.0.1
+    container_name: hive-metastore
+    environment:
+      HIVE_METASTORE_PORT_NUMBER: 9083
+      HIVE_METASTORE_DATABASE_HOST: hive-metastore-db
+      HIVE_METASTORE_DATABASE_PORT_NUMBER: 5432
+      HIVE_METASTORE_DATABASE_NAME: metastore
+      HIVE_METASTORE_DATABASE_USER: hive
+      HIVE_METASTORE_DATABASE_PASSWORD: hivepassword
+      HADOOP_ROOT_LOGGER: INFO,console
+      # Variáveis para acesso MinIO (exemplo)
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9083:9083"
+    volumes:
+      - ./hive_config/hive-site.xml:/opt/hive/conf/hive-site.xml:ro
+    networks:
+      - datalakehouse
+    depends_on:
+      hive-metastore-db:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: webserver
+    command: airflow api-server
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: [ "CMD", "curl", "--fail", "http://localhost:8080/health/live" ]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: scheduler
+    command: scheduler
+    healthcheck:
+      test: [ "CMD-SHELL", 'airflow jobs check --job-type SchedulerJob --hostname "webserver"' ]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    restart: always
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        function ver() {
+          printf "%04d%04d%04d%04d" $${1//./ }
+        }
+        if [[ -z "${AIRFLOW_UID}" ]]; then
+          echo
+          echo -e "\033[1;33mWARNING!!!: AIRFLOW_UID not set!\e[0m"
+        fi
+        one_meg=1048576
+        mem_available=$$(($$(getconf _PHYS_PAGES) * $$(getconf PAGE_SIZE) / one_meg))
+        cpus_available=$$(grep -cE 'cpu[0-9]+' /proc/stat)
+        disk_available=$$(df / | tail -1 | awk '{print $$4}')
+        warning_resources="false"
+        if (( mem_available < 4000 )) ; then
+          echo -e "\033[1;33mWARNING!!!: Not enough memory.\e[0m"
+          warning_resources="true"
+        fi
+        if (( cpus_available < 2 )); then
+          echo -e "\033[1;33mWARNING!!!: Not enough CPUs.\e[0m"
+          warning_resources="true"
+        fi
+        if (( disk_available < one_meg * 10 )); then
+          echo -e "\033[1;33mWARNING!!!: Not enough disk space.\e[0m"
+          warning_resources="true"
+        fi
+        if [[ $${warning_resources} == "true" ]]; then
+          echo -e "\033[1;33mWARNING!!!: Resource limits low.\e[0m"
+        fi
+        mkdir -p /sources/logs /sources/dags /sources/plugins
+        chown -R "${AIRFLOW_UID}:0" /sources/{logs,dags,plugins}
+        exec /entrypoint airflow version
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_UPGRADE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD}
+      _PIP_ADDITIONAL_REQUIREMENTS: ''
+    user: "0:0"
+    volumes:
+      - .:/sources
+
+  airbyte-server:
+    image: airbyte/server:0.50.61
+    container_name: airbyte-server
+    environment:
+      AIRBYTE_ROLE: server
+      DATABASE_USER: ${DATABASE_USER}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD}
+      DATABASE_URL: ${DATABASE_URL}
+      CONFIG_ROOT: /data
+      WORKSPACE_ROOT: /workspace
+    ports:
+      - "8001:8001"
+    volumes:
+      - airbyte_data:/data
+      - airbyte_workspace:/workspace
+    depends_on:
+      airbyte-db:
+        condition: service_healthy
+    networks:
+      - datalakehouse
+
+  airbyte-webapp:
+    image: airbyte/webapp:0.50.61
+    container_name: airbyte-webapp
+    ports:
+      - "8000:8000"
+    depends_on:
+      - airbyte-server
+    networks:
+      - datalakehouse
+
+volumes:
+  airflow_logs:
+  airflow_plugins:
+  airflow_secrets:
+  airflow_postgres_data:
+  hive_postgres_data:
+  airbyte_postgres_data:
+  airbyte_data:
+  airbyte_workspace:
+  minio_data:
+  minio_config:
+
+networks:
+  datalakehouse:
+    driver: bridge

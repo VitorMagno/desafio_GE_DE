@@ -1,0 +1,5 @@
+FROM apache/hive:4.0.1
+
+# Adiciona o driver PostgreSQL
+ADD drivers/postgresql-42.7.3.jar /opt/hive/lib/
+CMD ["bash", "c", "pkill -f hiveserver2 || true && /opt/hive/bin/hive --service ${SERVICE_NAME}"]
