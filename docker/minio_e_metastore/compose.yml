@@ -1,5 +1,4 @@
 services:
-  ## entrypoint: /usr/bin/entrypoint.sh, para rodar alguma verificação antes de iniciar o serviço
   datalake:
     image: minio/minio:RELEASE.2025-02-03T21-03-04Z-cpuv1
     volumes:
@@ -7,42 +6,31 @@ services:
     networks:
       - datalakehouse
     environment:
-      # MINIO_ACCESS_KEY_FILE=access_key 
-      # MINIO_SECRET_KEY_FILE=secret_key 
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER} 
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD} 
-      # MINIO_KMS_SECRET_KEY_FILE=kms_master_key 
-      # MINIO_UPDATE_MINISIGN_PUBKEY=RWTx5Zr1tiHQLwG9keckT0c45M3AGeHD6IvimQHpyRywVWGbP1aVSGav 
-      # MINIO_CONFIG_ENV_FILE=config.env MC_
-      # CONFIG_DIR=/tmp/.mc
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     command: minio server /data --console-address ":9001"
     deploy:
-      # replicas: 0
-      # resources:
-      #   limits:
-      #     cpus: '1'
-      #     memory: 1G
-      #     # pids: 100
-      #   reservations:
-      #     cpus: '0.1'
-      #     memory: 256M
       restart_policy:
         condition: on-failure
     ports:
       - "9000:9000"
       - "9001:9001"
 
-
-  postgres:
+  hive-postgres:
     image: postgres:15
     environment:
       POSTGRES_USER: hive
       POSTGRES_PASSWORD: password
       POSTGRES_DB: metastore_db
-    ports:
-      - "5432:5432"
     networks:
       - datalakehouse
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "hive"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   hive-server:
     image: hive-with-pgdriver
@@ -65,9 +53,9 @@ services:
     environment:
       SERVICE_NAME: metastore
       DB_DRIVER: postgres
-      DB_SERVICE_OPTS: "-Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver 
-                        -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://postgres:5432/metastore_db 
-                        -Djavax.jdo.option.ConnectionUserName=hive 
+      DB_SERVICE_OPTS: "-Djavax.jdo.option.ConnectionDriverName=org.postgresql.Driver \
+                        -Djavax.jdo.option.ConnectionURL=jdbc:postgresql://hive-postgres:5432/metastore_db \
+                        -Djavax.jdo.option.ConnectionUserName=hive \
                         -Djavax.jdo.option.ConnectionPassword=password"
       HIVE_CUSTOM_CONF_DIR: "./hive_custom_conf"
     volumes:
@@ -75,10 +63,13 @@ services:
       - ./hive_custom_conf/:/opt/hive/conf
     networks:
       - datalakehouse
-
+    depends_on:
+      hive-postgres:
+        condition: service_healthy
 
 networks:
   datalakehouse:
+    external: true
     driver: bridge
 
 volumes:
