@@ -1,4 +1,7 @@
 drivers/
+/docker/airflow/config/airflow.cfg
+/docker/airflow/logs/
+/docker/airflow/plugins/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
