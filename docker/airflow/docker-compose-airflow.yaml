@@ -87,6 +87,7 @@ x-airflow-common:
   networks:
     - airflow-net
     - datalakehouse
+    - data_management
 
 services:
   postgres:
@@ -342,6 +343,9 @@ volumes:
   postgres-db-volume:
 
 networks:
+  data_management:
+    external: true
+    driver: bridge
   airflow-net:
     driver: bridge
   datalakehouse:
