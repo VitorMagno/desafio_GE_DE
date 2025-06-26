@@ -22,29 +22,17 @@ services:
       POSTGRES_USER: hive
       POSTGRES_PASSWORD: password
       POSTGRES_DB: metastore_db
+    volumes:
+      - pgdata:/var/lib/postgresql/data
     networks:
       - datalakehouse
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "metastore_db"]
+      test: ["CMD", "pg_isready", "-U", "hive", "-d", "metastore_db"]
       interval: 10s
       timeout: 5s
-      retries: 5
-
-  hive-server:
-    image: hive-with-pgdriver
-    ports:
-      - "10000:10000"
-      - "10002:10002"
-    environment:
-      SERVICE_NAME: hiveserver2
-      IS_RESUME: "true"
-      DB_SERVICE_OPTS: "-Dhive.metastore.uris=thrift://metastore:9083"
-    volumes:
-      - warehouse:/opt/hive/data/warehouse
-    networks:
-      - datalakehouse
+      retries: 10
 
   hive-metastore:
     image: hive-with-pgdriver
@@ -66,6 +54,28 @@ services:
     depends_on:
       hive-postgres:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "ps aux | grep -i HiveMetaStore | grep -v grep"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  hive-server:
+    image: hive-with-pgdriver
+    ports:
+      - "10000:10000"
+      - "10002:10002"
+    environment:
+      SERVICE_NAME: hiveserver2
+      IS_RESUME: "true"
+      DB_SERVICE_OPTS: "-Dhive.metastore.uris=thrift://hive-metastore:9083"
+    volumes:
+      - warehouse:/opt/hive/data/warehouse
+    networks:
+      - datalakehouse
+    depends_on:
+      hive-metastore:
+        condition: service_healthy
 
 networks:
   datalakehouse:
@@ -75,3 +85,4 @@ networks:
 volumes:
   minio_data:
   warehouse:
+  pgdata:
