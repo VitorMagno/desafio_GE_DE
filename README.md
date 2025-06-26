@@ -6,10 +6,21 @@ Para configurar o hive, li instruções no docker hub e a documentação do pró
 
 ## subindo os serviços
 
+Windows
+```bash
+docker network create datalakehouse
+cd docker\powershell_scripts
+init.ps1
+```
+
+use down.ps1 para desativar os serviços
+
+Linux
 ```bash
 docker network create datalakehouse
 docker-compose \
   --env-file ./.env \
   -f docker/spark_jupyter/docker-compose.yml \
   -f docker/minio_e_metastore/compose.yml \
-  up -d --build datalake spark-master spark-worker jupyter-spark
+  up -d --build 
+```

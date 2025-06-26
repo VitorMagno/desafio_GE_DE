@@ -7,7 +7,7 @@ services:
       - SPARK_SSL_ENABLED=no
     ports:
       - "7077:7077"
-      - "8080:8080"
+      - "8282:8080"
     networks:
       - datalakehouse
 
@@ -32,20 +32,25 @@ services:
       - MINIO_ENDPOINT=datalake:9000
       - SPARK_MASTER_URL=spark://spark-master:7077
       - JUPYTER_ENABLE_LAB=yes
+      - XDG_DATA_HOME=/tmp/.local/share
+      - XDG_CONFIG_HOME=/tmp/.config
+      - XDG_CACHE_HOME=/tmp/.cache
     ports:
       - "8888:8888"
     volumes:
-      - ../../scripts:/home/jovyan/scripts
+      - ./notebooks:/notebooks
+      - ./config:/config
+    working_dir: /notebooks
     depends_on:
       spark-master:
         condition: service_started
       spark-worker:
         condition: service_started
-      datalake:
-        condition: service_started
     networks:
       - datalakehouse
 
 networks:
+  data_management:
+    external: true
   datalakehouse:
     external: true
