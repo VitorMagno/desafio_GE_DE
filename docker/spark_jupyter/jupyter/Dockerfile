@@ -3,7 +3,7 @@ FROM jupyter/pyspark-notebook:latest
 USER root
 
 RUN apt-get update && apt-get install -y gettext-base wget gosu && \
-    pip install --no-cache-dir minio boto3 psycopg2-binary trino apache-airflow-client
+    pip install --no-cache-dir minio boto3 psycopg2-binary trino "apache-airflow-client[all]==2.9.0"
 
 RUN pip install --no-cache-dir jupyterlab-lsp python-lsp-server[all]
 
